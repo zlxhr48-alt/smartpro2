@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>스마트 자리배치도</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:#f0f4f8;min-height:100vh;}
+input,textarea,button{font-family:inherit;}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const{useState,useEffect,createElement:h,Fragment}=React;
+const SKEY="seating_v3",SECKEY="seating_secret_v3";
+const T={
+  headerBg:"linear-gradient(135deg,#1e293b,#334155)",
+  podiumBg:"linear-gradient(135deg,#1e293b,#334155)",
+  deskBg:"#ffffff",deskBorder:"#94a3b8",deskText:"#1e293b",
+  deskInactiveBg:"#f1f5f9",deskInactiveBorder:"#cbd5e1",
+  sel:{bg:"#fef2f2",border:"#ef4444",text:"#991b1b"},
+  drag:{bg:"#ecfdf5",border:"#10b981"},
+  locked:{bg:"#fefce8",border:"#eab308",text:"#854d0e"},
+  panelBg:"linear-gradient(135deg,#1e293b,#0f172a)",
+  pi:"rgba(255,255,255,0.06)",pib:"rgba(255,255,255,0.12)",
+};
+
+function initDesks(rows,cols){
+  return Array.from({length:rows},(_,r)=>Array.from({length:cols},(_,c)=>({id:`${r}-${c}`,active:true,student:null,locked:false})));
+}
+function parseStudents(t){return t.split(/[\n,,]+/).map(s=>s.trim()).filter(Boolean);}
+function parseForbidden(lines){return lines.filter(l=>l.trim()).map(l=>l.split(/[,，]+/).map(s=>s.trim()).filter(Boolean)).filter(g=>g.length>=2);}
+function is3x3Adj(r1,c1,r2,c2){return Math.abs(r1-r2)<=1&&Math.abs(c1-c2)<=1&&!(r1===r2&&c1===c2);}
+function mdist(r1,c1,r2,c2){return Math.abs(r1-r2)+Math.abs(c1-c2);}
+
+function buildSeating(desks,students,groups,mode){
+  const allActive=[];
+  desks.forEach((row,r)=>row.forEach((d,c)=>{if(d.active)allActive.push([r,c]);}));
+  const lockedMap={};
+  allActive.forEach(([r,c])=>{const d=desks[r][c];if(d.locked&&d.student)lockedMap[`${r}-${c}`]=d.student;});
+  const lockedNames=new Set(Object.values(lockedMap));
+  const toPlace=students.filter(s=>!lockedNames.has(s));
+  const freeSlots=allActive.filter(([r,c])=>!lockedMap[`${r}-${c}`]);
+  const validGroups=groups.map(g=>g.filter(s=>students.includes(s))).filter(g=>g.length>=2);
+  const attempts=validGroups.length>0?300:1;
+  let bestPlaced=null,bestScore=[Infinity,-Infinity];
+  for(let t=0;t<attempts;t++){
+    const placed={...lockedMap};
+    const used=new Set(Object.keys(lockedMap));
+    const shuffled=[...freeSlots].sort(()=>Math.random()-0.5);
+    if(validGroups.length>0){
+      const gm=new Set(validGroups.flat());
+      const normals=toPlace.filter(s=>!gm.has(s));
+      const sorted=[...validGroups].sort((a,b)=>b.length-a.length);
+      const maxR=Math.max(...freeSlots.map(s=>s[0]));
+      const maxC=Math.max(...freeSlots.map(s=>s[1]));
+      for(const grp of sorted){
+        const assigned=[];
+        grp.forEach(s=>{const e=Object.entries(placed).find(([,v])=>v===s);if(e){const[r,c]=e[0].split("-").map(Number);assigned.push([r,c]);}});
+        for(const student of grp){
+          if(Object.values(placed).includes(student))continue;
+          const avail=shuffled.filter(([r,c])=>!used.has(`${r}-${c}`));
+          if(!avail.length)break;
+          let pick;
+          if(!assigned.length){
+            const edge=avail.filter(([r,c])=>r===0||c===0||r===maxR||c===maxC);
+            const pool=edge.length?edge:avail;
+            pick=pool[Math.floor(Math.random()*pool.length)];
+          }else{
+            const nonAdj=avail.filter(([r,c])=>assigned.every(([pr,pc])=>!is3x3Adj(pr,pc,r,c)));
+            const pool=nonAdj.length?nonAdj:avail;
+            let bd=-1,cands=[];
+            pool.forEach(([r,c])=>{const d=Math.min(...assigned.map(([pr,pc])=>mdist(r,c,pr,pc)));if(d>bd){bd=d;cands=[[r,c]];}else if(d===bd)cands.push([r,c]);});
+            pick=cands[Math.floor(Math.random()*cands.length)];
+          }
+          assigned.push(pick);used.add(`${pick[0]}-${pick[1]}`);placed[`${pick[0]}-${pick[1]}`]=student;
+        }
+      }
+      const rem=shuffled.filter(([r,c])=>!used.has(`${r}-${c}`));
+      [...normals].sort(()=>Math.random()-0.5).forEach((s,i)=>{if(i<rem.length)placed[`${rem[i][0]}-${rem[i][1]}`]=s;});
+    }else{
+      const ss=[...toPlace].sort(()=>Math.random()-0.5);
+      ss.forEach((s,i)=>{placed[`${shuffled[i][0]}-${shuffled[i][1]}`]=s;});
+    }
+    let violations=0,minDist=Infinity;
+    for(const grp of validGroups){
+      const pos=grp.map(s=>{const e=Object.entries(placed).find(([,v])=>v===s);return e?e[0].split("-").map(Number):null;}).filter(Boolean);
+      for(let i=0;i<pos.length;i++)for(let j=i+1;j<pos.length;j++){
+        const[r1,c1]=pos[i],[r2,c2]=pos[j];
+        if(is3x3Adj(r1,c1,r2,c2))violations++;
+        const d=mdist(r1,c1,r2,c2);if(d<minDist)minDist=d;
+      }
+    }
+    if(minDist===Infinity)minDist=0;
+    const score=[violations,-minDist];
+    if(score[0]<bestScore[0]||(score[0]===bestScore[0]&&score[1]<bestScore[1])){bestScore=score;bestPlaced={...placed};}
+    if(bestScore[0]===0&&t>=50)break;
+  }
+  return{desks:desks.map(row=>row.map(d=>({...d,student:bestPlaced?bestPlaced[d.id]??null:null}))),ok:bestScore[0]===0};
+}
+
+// Canvas 헬퍼
+function rr(ctx,x,y,w,h,r){ctx.beginPath();ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();}
+function rrc(ctx,x,y,w,h,tl,tr,br,bl){ctx.beginPath();ctx.moveTo(x+tl,y);ctx.lineTo(x+w-tr,y);tr?ctx.quadraticCurveTo(x+w,y,x+w,y+tr):ctx.lineTo(x+w,y);ctx.lineTo(x+w,y+h-br);br?ctx.quadraticCurveTo(x+w,y+h,x+w-br,y+h):ctx.lineTo(x+w,y+h);ctx.lineTo(x+bl,y+h);bl?ctx.quadraticCurveTo(x,y+h,x,y+h-bl):ctx.lineTo(x,y+h);ctx.lineTo(x,y+tl);tl?ctx.quadraticCurveTo(x,y,x+tl,y):ctx.lineTo(x,y);ctx.closePath();}
+function drawDesk(ctx,x,y,w,h,desk,side){
+  const r=10;
+  if(!desk.active||!desk.student){
+    ctx.fillStyle="#fff";side==="left"?rrc(ctx,x,y,w,h,r,0,0,r):side==="right"?rrc(ctx,x,y,w,h,0,r,r,0):rr(ctx,x,y,w,h,r);ctx.fill();return;
+  }
+  ctx.fillStyle=desk.locked?"#fefce8":"#fff";
+  side==="left"?rrc(ctx,x,y,w,h,r,0,0,r):side==="right"?rrc(ctx,x,y,w,h,0,r,r,0):rr(ctx,x,y,w,h,r);ctx.fill();
+  ctx.strokeStyle=desk.locked?"#eab308":"#94a3b8";ctx.lineWidth=1.5;
+  if(side==="left"){ctx.beginPath();ctx.moveTo(x+w,y);ctx.lineTo(x+r,y);ctx.quadraticCurveTo(x,y,x,y+r);ctx.lineTo(x,y+h-r);ctx.quadraticCurveTo(x,y+h,x+r,y+h);ctx.lineTo(x+w,y+h);ctx.stroke();}
+  else if(side==="right"){ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);ctx.lineTo(x,y+h);ctx.stroke();}
+  else ctx.stroke();
+  if(desk.locked){ctx.font="12px sans-serif";ctx.textAlign="left";ctx.textBaseline="top";ctx.fillText("🔒",x+4,y+4);}
+  ctx.fillStyle=desk.locked?"#854d0e":"#1e293b";
+  ctx.font=`600 ${Math.min(16,Math.max(11,h*0.26))}px 'Apple SD Gothic Neo','Malgun Gothic',sans-serif`;
+  ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(desk.student,x+w/2,y+h/2);
+}
+function exportImage(desks,rows,cols,mode,tv){
+  const ip=mode==="pair",cw=115,ch=72,gap=12,pg=22,pad=40,ph=44,hg=32;
+  const colX=[];let cx=pad;
+  for(let c=0;c<cols;c++){colX.push(cx);ip?cx+=cw+(c%2===0?0:(c<cols-1?pg:0)):cx+=cw+(c<cols-1?gap:0);}
+  const tw=colX[cols-1]+cw+pad,gsy=pad+ph+hg,th=gsy+rows*ch+(rows-1)*gap+pad+ph+16;
+  const dpr=2,canvas=document.createElement("canvas");
+  canvas.width=tw*dpr;canvas.height=th*dpr;
+  const ctx=canvas.getContext("2d");ctx.scale(dpr,dpr);
+  ctx.fillStyle="#fff";ctx.fillRect(0,0,tw,th);
+  const pw=200,px=(tw-pw)/2,py=tv?(gsy+rows*ch+(rows-1)*gap+16):pad;
+  const g=ctx.createLinearGradient(px,py,px+pw,py+ph);g.addColorStop(0,"#1e293b");g.addColorStop(1,"#334155");
+  ctx.fillStyle=g;rr(ctx,px,py,pw,ph,10);ctx.fill();
+  ctx.fillStyle="#fff";ctx.font="bold 14px 'Apple SD Gothic Neo','Malgun Gothic',sans-serif";
+  ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("교탁 (칠판)",px+pw/2,py+ph/2);
+  for(let r=0;r<rows;r++){
+    const sr=tv?(rows-1-r):r,y=gsy+r*(ch+gap);
+    if(ip){
+      for(let c=0;c<cols;c+=2){
+        const scL=tv?(cols-1-c):c,scR=tv?(cols-1-(c+1)):(c+1);
+        const dL=desks[sr][scL],dR=c+1<cols?desks[sr][scR]:null,x1=colX[c],x2=c+1<cols?colX[c+1]:null;
+        drawDesk(ctx,x1,y,cw,ch,dL,"left");
+        if(dR&&x2!==null){drawDesk(ctx,x2,y,cw,ch,dR,"right");if(dL.student&&dR.student){ctx.beginPath();ctx.moveTo(x2,y+5);ctx.lineTo(x2,y+ch-5);ctx.strokeStyle="#94a3b8";ctx.lineWidth=1;ctx.stroke();}}
+      }
+    }else{
+      for(let c=0;c<cols;c++){const sc=tv?(cols-1-c):c;drawDesk(ctx,colX[c],y,cw,ch,desks[sr][sc],null);}
+    }
+  }
+  canvas.toBlob(blob=>{
+    const url=URL.createObjectURL(blob),a=document.createElement("a");
+    a.href=url;a.download=`자리배치도_${tv?"교사용":"학생용"}_${new Date().toISOString().split("T")[0]}.png`;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(url),100);
+  },"image/png");
+}
+
+function App(){
+  const[mode,setMode]=useState("single");
+  const[rows,setRows]=useState(5);
+  const[cols,setCols]=useState(6);
+  const[desks,setDesks]=useState(()=>initDesks(5,6));
+  const[studentText,setStudentText]=useState("");
+  const[forbiddenLines,setForbiddenLines]=useState([""]);
+  const[selected,setSelected]=useState(null);
+  const[teacherOpen,setTeacherOpen]=useState(false);
+  const[secretDesks,setSecretDesks]=useState(null);
+  const[msg,setMsg]=useState("");
+  const[warning,setWarning]=useState("");
+  const[dragSrc,setDragSrc]=useState(null);
+  const[dragOver,setDragOver]=useState(null);
+  const flash=(m,d=2500)=>{setMsg(m);setTimeout(()=>setMsg(""),d);};
+
+  useEffect(()=>{
+    try{const s=localStorage.getItem(SKEY);if(s){const d=JSON.parse(s);if(d.desks)setDesks(d.desks);if(d.rows)setRows(d.rows);if(d.cols)setCols(d.cols);if(d.studentText)setStudentText(d.studentText);if(d.forbiddenLines)setForbiddenLines(d.forbiddenLines);if(d.mode)setMode(d.mode);}const sec=localStorage.getItem(SECKEY);if(sec)setSecretDesks(JSON.parse(sec));}catch{}
+  },[]);
+  useEffect(()=>{try{localStorage.setItem(SKEY,JSON.stringify({desks,rows,cols,studentText,forbiddenLines,mode}));}catch{}
+  },[desks,rows,cols,studentText,forbiddenLines,mode]);
+  useEffect(()=>{
+    const fn=e=>{
+      const tag=document.activeElement?.tagName;
+      if(tag==="INPUT"||tag==="TEXTAREA")return;
+      if(e.key==="z"||e.key==="Z")setTeacherOpen(o=>!o);
+      if((e.key==="s"||e.key==="S")&&!e.ctrlKey&&!e.metaKey){
+        try{localStorage.setItem(SECKEY,JSON.stringify(desks));setSecretDesks(desks);}catch{}
+        setWarning("🔒 비밀 자리 저장됨");if(!teacherOpen)flash("💾 저장됨");
+      }
+    };
+    window.addEventListener("keydown",fn);return()=>window.removeEventListener("keydown",fn);
+  },[teacherOpen,desks]);
+
+  const students=parseStudents(studentText);
+  const forbiddenGroups=parseForbidden(forbiddenLines);
+  const applyGrid=(nr,nc)=>{setDesks(prev=>Array.from({length:nr},(_,r)=>Array.from({length:nc},(_,c)=>prev[r]?.[c]??{id:`${r}-${c}`,active:true,student:null,locked:false})));setRows(nr);setCols(nc);};
+  const toggleDesk=(r,c)=>setDesks(prev=>prev.map((row,ri)=>row.map((d,ci)=>ri===r&&ci===c?{...d,active:!d.active,student:null,locked:false}:d)));
+  const clickDesk=(r,c)=>{
+    if(!desks[r][c].active)return;
+    if(!selected){setSelected({r,c});return;}
+    if(selected.r===r&&selected.c===c){setSelected(null);return;}
+    setDesks(prev=>{const n=prev.map(row=>row.map(d=>({...d})));const tmp=n[selected.r][selected.c].student;n[selected.r][selected.c].student=n[r][c].student;n[r][c].student=tmp;return n;});
+    setSelected(null);
+  };
+  const dblDesk=(r,c)=>{if(!desks[r][c].active||!desks[r][c].student)return;setDesks(prev=>prev.map((row,ri)=>row.map((d,ci)=>ri===r&&ci===c?{...d,locked:!d.locked}:d)));};
+  const randomAssign=(sec=false)=>{
+    if(sec&&secretDesks){setDesks(secretDesks);setWarning("🔓 비밀 자리 배치 적용됨");return;}
+    const ad=desks.flat().filter(d=>d.active);
+    const ls=new Set(ad.filter(d=>d.locked&&d.student).map(d=>d.student));
+    if(students.filter(s=>!ls.has(s)).length>ad.filter(d=>!d.locked).length){
+      setWarning(`⚠ 학생 수와 자리 수가 맞지 않아요. (학생 ${students.length}명 / 활성 자리 ${ad.length}개)`);return;
+    }
+    const{desks:res,ok}=buildSeating(desks,students,forbiddenGroups,mode);
+    if(!ok)setWarning("⚠ 기피 조건을 완전히 만족하기 어려워 최대한 멀리 배치했어요.");
+    else{setWarning("");flash("✨ 자리가 새로 배치되었어요!");}
+    setDesks(res);
+  };
+  const clearAssign=()=>{setDesks(prev=>prev.map(row=>row.map(d=>({...d,student:null,locked:false}))));flash("🗑 배정 초기화");};
+  const dropDesk=(r,c,sr,sc)=>{if(sr===r&&sc===c)return;setDesks(prev=>{const n=prev.map(row=>row.map(d=>({...d})));const tmp=n[sr][sc].student;n[sr][sc].student=n[r][c].student;n[r][c].student=tmp;return n;});};
+  const saveImg=(tv)=>{try{exportImage(desks,rows,cols,mode,tv);flash(tv?"📋 교사용 저장됨":"📸 학생용 저장됨");}catch{flash("⚠ 저장 실패");}};
+
+  const cw=Math.min(120,Math.floor(740/cols)),ch=Math.max(58,Math.floor(cw*0.6)),ip=mode==="pair";
+  const assigned=desks.flat().map(d=>d.student).filter(Boolean);
+  const unassigned=students.filter(s=>!assigned.includes(s));
+
+  const ds=(desk,r,c)=>{
+    const isSel=selected?.r===r&&selected?.c===c,isDrag=dragOver?.r===r&&dragOver?.c===c;
+    return{width:cw,height:ch,borderRadius:10,border:isSel?`2px solid ${T.sel.border}`:isDrag?`2px solid ${T.drag.border}`:desk.locked?`1.8px solid ${T.locked.border}`:desk.active?`1.5px solid ${T.deskBorder}`:`1.5px dashed ${T.deskInactiveBorder}`,background:!desk.active?T.deskInactiveBg:isSel?T.sel.bg:isDrag?T.drag.bg:desk.locked?T.locked.bg:T.deskBg,cursor:desk.active?"pointer":"default",display:"flex",alignItems:"center",justifyContent:"center",position:"relative",transition:"all .15s",boxSizing:"border-box",userSelect:"none",flexShrink:0};
+  };
+  const dc=(desk,r,c)=>{
+    const isSel=selected?.r===r&&selected?.c===c;
+    if(!desk.active||!desk.student)return null;
+    return h(Fragment,null,
+      desk.locked&&h("div",{style:{position:"absolute",top:3,left:6,fontSize:11}},"🔒"),
+      h("div",{style:{fontSize:Math.max(12,ch*0.26),fontWeight:600,color:desk.locked?T.locked.text:isSel?T.sel.text:T.deskText,textAlign:"center",padding:"0 6px",lineHeight:1.2,wordBreak:"keep-all"}},desk.student)
+    );
+  };
+  const tb=(r,c,desk)=>h("button",{onClick:e=>{e.stopPropagation();toggleDesk(r,c);},style:{position:"absolute",top:3,right:3,width:17,height:17,borderRadius:"50%",border:"none",cursor:"pointer",fontSize:11,background:desk.active?"rgba(239,68,68,0.12)":"rgba(16,185,129,0.12)",color:desk.active?"#dc2626":"#059669",display:"flex",alignItems:"center",justifyContent:"center",padding:0,fontWeight:700}},desk.active?"−":"+");
+
+  const deskEl=(desk,r,c)=>h("div",{key:c,onClick:()=>clickDesk(r,c),onDoubleClick:()=>dblDesk(r,c),draggable:desk.active&&!!desk.student,onDragStart:()=>setDragSrc({r,c}),onDragOver:e=>{e.preventDefault();setDragOver({r,c});},onDragLeave:()=>setDragOver(null),onDrop:e=>{e.preventDefault();if(dragSrc){dropDesk(r,c,dragSrc.r,dragSrc.c);setDragSrc(null);setDragOver(null);}},onDragEnd:()=>{setDragSrc(null);setDragOver(null);},style:ds(desk,r,c)},dc(desk,r,c),teacherOpen&&tb(r,c,desk));
+
+  const pairRow=(row,r)=>Array.from({length:Math.ceil(cols/2)},(_,pi)=>{
+    const c1=pi*2,c2=pi*2+1,isLast=pi===Math.ceil(cols/2)-1;
+    const mkDesk=(desk,r,c,borderRight)=>h("div",{key:c,onClick:()=>clickDesk(r,c),onDoubleClick:()=>dblDesk(r,c),draggable:desk.active&&!!desk.student,onDragStart:()=>setDragSrc({r,c}),onDragOver:e=>{e.preventDefault();setDragOver({r,c});},onDragLeave:()=>setDragOver(null),onDrop:e=>{e.preventDefault();if(dragSrc){dropDesk(r,c,dragSrc.r,dragSrc.c);setDragSrc(null);setDragOver(null);}},onDragEnd:()=>{setDragSrc(null);setDragOver(null);},style:{width:cw,height:ch,border:"none",borderRight:borderRight?`1px solid ${T.deskBorder}`:undefined,background:!desk.active?T.deskInactiveBg:selected?.r===r&&selected?.c===c?T.sel.bg:dragOver?.r===r&&dragOver?.c===c?T.drag.bg:desk.locked?T.locked.bg:T.deskBg,cursor:desk.active?"pointer":"default",display:"flex",alignItems:"center",justifyContent:"center",position:"relative",transition:"all .15s",boxSizing:"border-box",userSelect:"none",flexShrink:0,outline:selected?.r===r&&selected?.c===c?`2px solid ${T.sel.border}`:dragOver?.r===r&&dragOver?.c===c?`2px solid ${T.drag.border}`:"none",outlineOffset:"-2px"}},dc(desk,r,c),teacherOpen&&tb(r,c,desk));
+    return h("div",{key:pi,style:{display:"flex",marginRight:isLast?0:22,borderRadius:10,border:`1.5px solid ${T.deskBorder}`,overflow:"hidden",boxShadow:"0 1px 4px rgba(15,23,42,0.05)"}},
+      mkDesk(row[c1],r,c1,c2<cols),
+      c2<cols&&mkDesk(row[c2],r,c2,false)
+    );
+  });
+
+  // 입력창 스타일
+  const inp={width:"100%",background:T.pi,border:`1px solid ${T.pib}`,borderRadius:8,padding:"7px 10px",fontSize:12,color:"#fff",fontFamily:"inherit"};
+  const panelCard={background:"rgba(255,255,255,0.03)",padding:14,borderRadius:12,border:"1px solid rgba(255,255,255,0.06)"};
+
+  return h("div",{style:{minHeight:"100vh",background:"#f0f4f8",padding:20}},
+    h("div",{style:{maxWidth:1080,margin:"0 auto"}},
+      // 헤더
+      h("div",{style:{background:T.headerBg,borderRadius:16,padding:"18px 24px",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,boxShadow:"0 8px 24px rgba(15,23,42,0.12)"}},
+        h("div",null,
+          h("div",{style:{color:"#fff",fontWeight:700,fontSize:19,display:"flex",alignItems:"center",gap:8}},h("span",{style:{fontSize:22}},"🏫"),"스마트 자리배치도"),
+          h("div",{style:{color:"rgba(255,255,255,0.6)",fontSize:12,marginTop:4}},"학생 ",h("b",{style:{color:"#fff"}},students.length),"명 · 책상 ",h("b",{style:{color:"#fff"}},desks.flat().filter(d=>d.active).length),"개")
+        ),
+        h("div",{style:{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}},
+          msg&&h("div",{style:{background:"#fff",borderRadius:10,padding:"8px 14px",fontSize:12,fontWeight:600,color:"#1e293b"}},msg),
+          h("button",{onClick:e=>randomAssign(e.ctrlKey||e.metaKey),style:{padding:"10px 18px",borderRadius:10,border:"none",cursor:"pointer",background:"#fff",color:"#1e293b",fontWeight:700,fontSize:13,boxShadow:"0 2px 8px rgba(0,0,0,0.1)"}},"🎲 랜덤 배치"),
+          h("button",{onClick:()=>saveImg(false),style:{padding:"10px 14px",borderRadius:10,border:"1px solid rgba(255,255,255,0.3)",cursor:"pointer",background:"rgba(255,255,255,0.1)",color:"#fff",fontWeight:600,fontSize:12}},"📸 학생용"),
+          h("button",{onClick:()=>saveImg(true),style:{padding:"10px 14px",borderRadius:10,border:"1px solid rgba(255,255,255,0.3)",cursor:"pointer",background:"rgba(255,255,255,0.1)",color:"#fff",fontWeight:600,fontSize:12}},"📋 교사용")
+        )
+      ),
+      // 교사 패널
+      teacherOpen&&h("div",{style:{background:T.panelBg,borderRadius:16,padding:22,marginBottom:16,color:"#fff",boxShadow:"0 8px 24px rgba(15,23,42,0.2)"}},
+        h("div",{style:{fontWeight:700,fontSize:16,marginBottom:16,color:"#fbbf24",display:"flex",alignItems:"center",gap:8}},
+          "🔐 교사 설정 패널 ",h("span",{style:{fontSize:11,color:"#94a3b8",fontWeight:500,padding:"3px 8px",background:"rgba(148,163,184,0.15)",borderRadius:8}},"Z키로 닫기")
+        ),
+        h("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:14}},
+          // 학생 명단
+          h("div",{style:panelCard},
+            h("div",{style:{fontSize:13,fontWeight:700,color:"#93c5fd",marginBottom:6}},"👥 학생 명단"),
+            h("div",{style:{fontSize:11,color:"rgba(255,255,255,0.5)",marginBottom:6}},"줄바꿈 또는 쉼표로 구분"),
+            h("textarea",{value:studentText,onChange:e=>setStudentText(e.target.value),placeholder:"홍길동\n이순신\n강감찬",rows:8,style:{...inp,fontSize:13,resize:"vertical"}}),
+            h("div",{style:{fontSize:11,color:"#67e8f9",marginTop:4,fontWeight:600}},"총 ",students.length,"명")
+          ),
+          // 기피관계
+          h("div",{style:panelCard},
+            h("div",{style:{fontSize:13,fontWeight:700,color:"#fca5a5",marginBottom:6}},"🚫 기피관계"),
+            h("div",{style:{fontSize:11,color:"rgba(255,255,255,0.5)",marginBottom:8}},"한 줄 = 기피 그룹 · 쉼표 구분"),
+            ...forbiddenLines.map((line,i)=>h("div",{key:i,style:{display:"flex",gap:4,marginBottom:6}},
+              h("input",{value:line,onChange:e=>setForbiddenLines(prev=>prev.map((l,li)=>li===i?e.target.value:l)),placeholder:"예: 홍길동, 이순신",style:inp}),
+              h("button",{onClick:()=>setForbiddenLines(prev=>prev.filter((_,li)=>li!==i)),style:{background:"rgba(239,68,68,0.2)",border:"1px solid rgba(239,68,68,0.3)",borderRadius:8,color:"#fca5a5",cursor:"pointer",padding:"0 10px",fontSize:13}},"✕")
+            )),
+            h("button",{onClick:()=>setForbiddenLines(prev=>[...prev,""]),style:{background:"transparent",border:"1px dashed rgba(255,255,255,0.2)",borderRadius:8,color:"rgba(255,255,255,0.6)",cursor:"pointer",padding:"8px 12px",fontSize:12,width:"100%",marginTop:2}},"+그룹 추가"),
+            h("div",{style:{marginTop:10,fontSize:11,color:"rgba(255,255,255,0.35)",lineHeight:1.6}},"💡 한 그룹 기피 관계 인원이 많아질수록 다양한 자리배치 경우의 수가 줄어듭니다.")
+          ),
+          // 교실 설정
+          h("div",{style:panelCard},
+            h("div",{style:{fontSize:13,fontWeight:700,color:"#93c5fd",marginBottom:8}},"⚙️ 교실 설정"),
+            ...[["single","📋 한 줄 배치"],["pair","👫 짝꿍 배치"]].map(([v,l])=>h("div",{key:v,onClick:()=>setMode(v),style:{padding:"9px 12px",borderRadius:10,marginBottom:6,cursor:"pointer",border:`1.5px solid ${mode===v?"#60a5fa":"rgba(255,255,255,0.1)"}`,background:mode===v?"rgba(96,165,250,0.15)":"transparent",fontSize:13,color:mode===v?"#bfdbfe":"rgba(255,255,255,0.7)",fontWeight:mode===v?600:400}},l)),
+            h("div",{style:{fontSize:12,color:"rgba(255,255,255,0.6)",marginTop:10,marginBottom:4}},"행: ",h("b",{style:{color:"#fff"}},rows)),
+            h("input",{type:"range",min:2,max:10,value:rows,onChange:e=>applyGrid(Number(e.target.value),cols),style:{width:"100%",accentColor:"#60a5fa"}}),
+            h("div",{style:{fontSize:12,color:"rgba(255,255,255,0.6)",marginTop:6,marginBottom:4}},"열: ",h("b",{style:{color:"#fff"}},cols)),
+            h("input",{type:"range",min:2,max:12,value:cols,onChange:e=>applyGrid(rows,Number(e.target.value)),style:{width:"100%",accentColor:"#60a5fa"}})
+          ),
+          // 비밀 자리
+          h("div",{style:panelCard},
+            h("div",{style:{fontSize:13,fontWeight:700,color:"#fbbf24",marginBottom:8}},"🔒 비밀 자리"),
+            h("button",{onClick:()=>{try{localStorage.setItem(SECKEY,JSON.stringify(desks));setSecretDesks(desks);}catch{}setWarning("🔒 비밀 자리 저장됨");},style:{width:"100%",padding:"9px",borderRadius:10,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#eab308,#ca8a04)",color:"#fff",fontWeight:700,fontSize:12,marginBottom:6}},"💾 비밀 자리 저장 (S)"),
+            h("button",{onClick:()=>randomAssign(true),style:{width:"100%",padding:"9px",borderRadius:10,border:"none",cursor:"pointer",background:"linear-gradient(135deg,#475569,#334155)",color:"#fff",fontWeight:700,fontSize:12,marginBottom:6}},"🔓 비밀 자리 적용"),
+            h("button",{onClick:clearAssign,style:{width:"100%",padding:"9px",borderRadius:10,border:"1px solid rgba(255,255,255,0.15)",cursor:"pointer",background:"rgba(255,255,255,0.05)",color:"rgba(255,255,255,0.7)",fontWeight:600,fontSize:12,marginBottom:12}},"🗑 배정 초기화"),
+            h("div",{style:{fontSize:11,color:"rgba(255,255,255,0.5)",lineHeight:1.9}},"💡 더블클릭 = 🔒 고정",h("br"),"💡 클릭→클릭 = 교체",h("br"),"💡 드래그 = 이동",h("br"),"💡 Ctrl+랜덤 = 비밀자리")
+          )
+        ),
+        warning&&h("div",{style:{marginTop:14,padding:"12px 14px",background:"rgba(251,191,36,0.12)",border:"1px solid rgba(251,191,36,0.35)",borderRadius:10,display:"flex",alignItems:"center",justifyContent:"space-between"}},
+          h("span",{style:{fontSize:12,color:"#fde68a",fontWeight:600}},warning),
+          h("button",{onClick:()=>setWarning(""),style:{background:"transparent",border:"none",color:"#fde68a",cursor:"pointer",fontSize:14,padding:0}},"✕")
+        ),
+        unassigned.length>0&&h("div",{style:{marginTop:10,padding:"10px 14px",background:"rgba(251,191,36,0.08)",borderRadius:10,border:"1px solid rgba(251,191,36,0.2)"}},
+          h("span",{style:{fontSize:12,color:"#fbbf24",fontWeight:700}},`⚠ 미배정 ${unassigned.length}명: `),
+          h("span",{style:{fontSize:12,color:"rgba(255,255,255,0.7)"}},unassigned.join(", "))
+        )
+      ),
+      // 교실
+      h("div",{style:{background:"#fff",borderRadius:18,padding:32,boxShadow:"0 4px 20px rgba(15,23,42,0.05)",border:"1px solid #e2e8f0",overflowX:"auto"}},
+        h("div",{style:{background:T.podiumBg,borderRadius:10,padding:"12px 40px",textAlign:"center",color:"#fff",fontWeight:700,fontSize:14,width:"fit-content",margin:"0 auto 32px",letterSpacing:2}},"교탁 (칠판)"),
+        h("div",{style:{display:"flex",flexDirection:"column",gap:14,alignItems:"center"}},
+          ...desks.map((row,r)=>h("div",{key:r,style:{display:"flex"}},
+            ip?pairRow(row,r):h("div",{style:{display:"flex",gap:12}},...row.map((desk,c)=>deskEl(desk,r,c)))
+          ))
+        ),
+        selected&&h("div",{style:{textAlign:"center",marginTop:22,fontSize:13,color:T.sel.text,fontWeight:600,background:T.sel.bg,padding:"8px 16px",borderRadius:10,width:"fit-content",margin:"22px auto 0",border:`1px solid ${T.sel.border}`}},
+          `🔴 "${desks[selected.r][selected.c].student||"빈자리"}" 선택됨 — 바꿀 자리를 클릭하세요`
+        )
+      ),
+      h("div",{style:{marginTop:14,fontSize:11,color:"#64748b",textAlign:"center",fontWeight:500}},"자리 클릭 후 다른 자리 클릭 = 교체 · 드래그 = 이동 · 더블클릭 = 🔒 자리 고정"),
+      h("div",{style:{marginTop:6,fontSize:11,color:"#94a3b8",textAlign:"center",letterSpacing:1}},"created by GIGA mini")
+    )
+  );
+}
+
+const root=ReactDOM.createRoot(document.getElementById("root"));
+root.render(React.createElement(App));
+</script>
+</body>
+</html>
